@@ -1,0 +1,227 @@
+import java.nio.ByteBuffer;
+import java.nio.IntBuffer;
+import gab.opencv.*;
+
+import org.opencv.core.Core;
+import processing.core.PImage;
+import org.opencv.core.Mat;
+import org.opencv.core.Scalar;
+import org.opencv.core.Rect;
+import org.opencv.imgproc.Imgproc;
+import org.opencv.core.CvType;
+import java.util.List;
+import org.opencv.core.MatOfPoint;
+import processing.video.*;
+
+
+Capture video;
+OpenCV opencv;
+PVector ballPosition, ballVelocity;
+float leftPaddleY, rightPaddleY;
+float paddleWidth = 10, paddleHeight = 60, paddleSpeed = 2;
+float leftPaddleSpeed = 0, rightPaddleSpeed = 0;
+float ballSize = 20;
+float threshold = 500;
+boolean leftHandIsUp, rightHandIsUp;
+boolean isPaused = false;
+
+// This function will convert PImage to Mat
+Mat toMat(PImage image) {
+    image.loadPixels();
+    int w = image.width;
+    int h = image.height;
+
+    // Create a Mat with the appropriate size and type
+    Mat mat = new Mat(h, w, CvType.CV_8UC4);
+
+    // Prepare buffers to handle the data transfer
+    ByteBuffer byteBuffer = ByteBuffer.allocate(w * h * 4);  // Allocating a buffer for the entire pixel data
+    IntBuffer intBuffer = byteBuffer.asIntBuffer();  // View the ByteBuffer as an IntBuffer
+
+    // Copy the pixel data from the PImage to the IntBuffer
+    intBuffer.put(image.pixels);
+
+    // Now retrieve the underlying byte array from the ByteBuffer
+    byte[] byteArray = byteBuffer.array();
+
+    // Put the byte array into the Mat
+    mat.put(0, 0, byteArray);
+    return mat;
+}
+
+
+// Convert Mat (CvType=CV_8UC4) to PImage (ARGB)
+PImage toPImage(Mat mat) {
+    int w = mat.cols();
+    int h = mat.rows();
+
+    // Create a PImage with the appropriate dimensions and format
+    PImage img = createImage(w, h, ARGB);
+
+    // Prepare the byte array to fetch data from the Mat
+    byte[] matBytes = new byte[w * h * 4];
+    mat.get(0, 0, matBytes);
+
+    // Wrap the byte array with a ByteBuffer and view it as an IntBuffer
+    ByteBuffer byteBuffer = ByteBuffer.wrap(matBytes);
+    IntBuffer intBuffer = byteBuffer.asIntBuffer();
+
+    // Prepare the pixel array to be filled
+    int[] pixels = new int[w * h];
+    intBuffer.get(pixels);
+
+    // Copy the converted pixels into the PImage
+    img.pixels = pixels;
+    img.updatePixels();
+    return img;
+}
+
+void setup() {
+    size(640, 480); // Example size, adjust as needed
+    ballPosition = new PVector(width/2, height/2);
+    ballVelocity = new PVector(random(-3, 3), random(-3, 3));
+    video = new Capture(this, width, height);
+    opencv = new OpenCV(this, width, height);
+    video.start();
+    // Initialize other variables as needed
+}
+
+
+void draw() {
+    if (video.available()) {
+        video.read();
+        opencv.loadImage(video);
+
+        Mat src = opencv.getOutput(); // Ensure this is a Mat
+        Imgproc.cvtColor(src, src, Imgproc.COLOR_RGB2HSV); // Correct usage of Mat
+        Scalar lowerb = new Scalar(0, 48, 80);
+        Scalar upperb = new Scalar(20, 255, 255);
+        Mat mask = new Mat();
+        Core.inRange(src, lowerb, upperb, mask); // Correct usage of Mat
+
+        List<MatOfPoint> contours = new ArrayList<MatOfPoint>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+        for (MatOfPoint contour : contours) {
+            Rect boundingBox = Imgproc.boundingRect(contour);
+            float centerX = boundingBox.x + boundingBox.width / 2.0;
+            if (boundingBox.area() > threshold) {
+                if (centerX < width / 2) {
+                    leftPaddleY = boundingBox.y + boundingBox.height / 2;
+                } else {
+                    rightPaddleY = boundingBox.y + boundingBox.height / 2;
+                }
+            }
+        }
+        updatePaddles();
+        updateBall();
+        checkCollisionWithPaddles();
+        drawBall();
+        image(toPImage(mask), 0, 0); // Correct conversion from Mat to PImage before display
+    }
+}
+
+
+void handleVideoCaptureAndMotionDetection() {
+    opencv.loadImage(video); // Ensure video is loaded correctly
+    if (video.available()) {
+        video.read(); // Read the next frame
+        Mat src = opencv.getOutput(); // Again, ensure it's a Mat
+        Mat hsv = new Mat();
+        Imgproc.cvtColor(src, hsv, Imgproc.COLOR_RGB2HSV); // Properly use cvtColor with the correct Mat objects
+
+        Mat mask = new Mat();
+        Scalar lowerb = new Scalar(0, 48, 80);
+        Scalar upperb = new Scalar(20, 255, 255);
+        Core.inRange(hsv, lowerb, upperb, mask);
+
+        List<MatOfPoint> contours = new ArrayList<MatOfPoint>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+        for (MatOfPoint contour : contours) {
+            Rect boundingBox = Imgproc.boundingRect(contour); // Use Rect from OpenCV
+            if ((double)boundingBox.width * boundingBox.height > threshold) {
+                int centerY = boundingBox.y + boundingBox.height / 2;
+                if (boundingBox.x + boundingBox.width / 2 < width / 2) {
+                    leftHandIsUp = true;
+                } else {
+                    rightHandIsUp = true;
+                }
+            }
+        }
+    }
+}
+
+
+
+void updatePaddles() {
+  leftPaddleY = constrain(leftPaddleY, 0, height - paddleHeight);
+  rightPaddleY = constrain(rightPaddleY, 0, height - paddleHeight);
+
+  rect(30, leftPaddleY, paddleWidth, paddleHeight);
+  rect(width - 40 - paddleWidth, rightPaddleY, paddleWidth, paddleHeight);
+}
+
+void updateBall() {
+  if (!isPaused) {
+    ballPosition.add(ballVelocity);
+
+    if (ballPosition.y < 0 || ballPosition.y > height) {
+      ballVelocity.y *= -1;
+    }
+
+    if (ballPosition.x < 0 || ballPosition.x > width) {
+      resetBall();
+    }
+  }
+}
+
+void drawBall() {
+ ellipse(ballPosition.x, ballPosition.y, ballSize, ballSize);
+}
+
+void keyPressed() {
+  if (key == 'p') {
+    isPaused = !isPaused;  // Pause or unpause the game
+  }
+
+  if (!isPaused) {
+    if (key == 'r') {
+      resetBall();
+    }
+    // Move paddles using keys
+    if (key == 'w') {
+      leftPaddleY -= paddleSpeed;
+    }
+    if (key == 's') {
+      leftPaddleY += paddleSpeed;
+    }
+    if (key == 'i') {
+      rightPaddleY -= paddleSpeed;
+    }
+    if (key == 'k') {
+      rightPaddleY += paddleSpeed;
+    }
+  }
+}
+
+void checkCollisionWithPaddles() {
+  // Check collision with left paddle
+  if (ballPosition.x - ballSize/2 <= 30 + paddleWidth && ballPosition.y >= leftPaddleY && ballPosition.y <= leftPaddleY + paddleHeight) {
+    ballVelocity.x = -ballVelocity.x; // Reverse the ball's horizontal direction
+    ballVelocity.mult(1.05); // Optionally increase speed after hitting paddle
+  }
+  
+  // Check collision with right paddle
+  if (ballPosition.x + ballSize/2 >= width - 40 - paddleWidth && ballPosition.y >= rightPaddleY && ballPosition.y <= rightPaddleY + paddleHeight) {
+    ballVelocity.x = -ballVelocity.x; // Reverse the ball's horizontal direction
+    ballVelocity.mult(1.05); // Optionally increase speed after hitting paddle
+  }
+}
+
+void resetBall() {
+  ballPosition.set(width/2, height/2);
+  ballVelocity.set(random(-3, 3), random(-3, 3));
+}
